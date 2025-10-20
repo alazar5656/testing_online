@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { body, validationResult } = require('express-validator');
-const { db } = require('../database');
+const { db, dbWithTimeout } = require('../database');
 const { generateToken, authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
@@ -20,11 +20,9 @@ router.post('/register', [
 
     const { username, email, password, role = 'user' } = req.body;
 
-    // Check if user already exists
-    db.get('SELECT id FROM users WHERE email = ? OR username = ?', [email, username], async (err, user) => {
-      if (err) {
-        return res.status(500).json({ message: 'Database error' });
-      }
+    // Check if user already exists with timeout protection
+    try {
+      const user = await dbWithTimeout.get('SELECT id FROM users WHERE email = ? OR username = ?', [email, username], 5000);
       
       if (user) {
         return res.status(400).json({ message: 'User already exists' });
@@ -33,31 +31,33 @@ router.post('/register', [
       // Hash password
       const hashedPassword = await bcrypt.hash(password, 10);
 
-      // Create user
-      db.run(
+      // Create user with timeout protection
+      const result = await dbWithTimeout.run(
         'INSERT INTO users (username, email, password, role) VALUES (?, ?, ?, ?)',
         [username, email, hashedPassword, role],
-        function(err) {
-          if (err) {
-            return res.status(500).json({ message: 'Failed to create user' });
-          }
-
-          const newUser = {
-            id: this.lastID,
-            username,
-            email,
-            role
-          };
-
-          const token = generateToken(newUser);
-          res.status(201).json({
-            message: 'User created successfully',
-            user: newUser,
-            token
-          });
-        }
+        5000
       );
-    });
+
+      const newUser = {
+        id: result.lastID,
+        username,
+        email,
+        role
+      };
+
+      const token = generateToken(newUser);
+      res.status(201).json({
+        message: 'User created successfully',
+        user: newUser,
+        token
+      });
+    } catch (error) {
+      console.error('Registration error:', error.message);
+      if (error.message.includes('timeout')) {
+        return res.status(408).json({ message: 'Database operation timed out. Please try again.' });
+      }
+      return res.status(500).json({ message: 'Database error during registration' });
+    }
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -76,10 +76,9 @@ router.post('/login', [
 
     const { email, password } = req.body;
 
-    db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
-      if (err) {
-        return res.status(500).json({ message: 'Database error' });
-      }
+    try {
+      // Find user with timeout protection - this is the equivalent of users.findOne()
+      const user = await dbWithTimeout.get('SELECT * FROM users WHERE email = ?', [email], 5000);
 
       if (!user) {
         return res.status(401).json({ message: 'Invalid credentials' });
@@ -98,32 +97,42 @@ router.post('/login', [
         user: userWithoutPassword,
         token
       });
-    });
+    } catch (error) {
+      console.error('Login error:', error.message);
+      if (error.message.includes('timeout')) {
+        return res.status(408).json({ message: 'Database operation timed out. Please try again.' });
+      }
+      return res.status(500).json({ message: 'Database error during login' });
+    }
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
 });
 
 // Get current user
-router.get('/me', authenticateToken, (req, res) => {
-  db.get('SELECT id, username, email, role, created_at FROM users WHERE id = ?', [req.user.id], (err, user) => {
-    if (err) {
-      return res.status(500).json({ message: 'Database error' });
-    }
+router.get('/me', authenticateToken, async (req, res) => {
+  try {
+    const user = await dbWithTimeout.get('SELECT id, username, email, role, created_at FROM users WHERE id = ?', [req.user.id], 5000);
     
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
     res.json({ user });
-  });
+  } catch (error) {
+    console.error('Get user error:', error.message);
+    if (error.message.includes('timeout')) {
+      return res.status(408).json({ message: 'Database operation timed out. Please try again.' });
+    }
+    return res.status(500).json({ message: 'Database error' });
+  }
 });
 
 // Update profile
 router.put('/profile', authenticateToken, [
   body('username').optional().isLength({ min: 3 }).withMessage('Username must be at least 3 characters'),
   body('email').optional().isEmail().withMessage('Please provide a valid email')
-], (req, res) => {
+], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
@@ -149,17 +158,21 @@ router.put('/profile', authenticateToken, [
   updates.push('updated_at = CURRENT_TIMESTAMP');
   values.push(req.user.id);
 
-  db.run(
-    `UPDATE users SET ${updates.join(', ')} WHERE id = ?`,
-    values,
-    function(err) {
-      if (err) {
-        return res.status(500).json({ message: 'Failed to update profile' });
-      }
+  try {
+    await dbWithTimeout.run(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = ?`,
+      values,
+      5000
+    );
 
-      res.json({ message: 'Profile updated successfully' });
+    res.json({ message: 'Profile updated successfully' });
+  } catch (error) {
+    console.error('Profile update error:', error.message);
+    if (error.message.includes('timeout')) {
+      return res.status(408).json({ message: 'Database operation timed out. Please try again.' });
     }
-  );
+    return res.status(500).json({ message: 'Failed to update profile' });
+  }
 });
 
 module.exports = router;

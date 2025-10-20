@@ -3,7 +3,22 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 
 const dbPath = path.join(__dirname, 'store_management.db');
-const db = new sqlite3.Database(dbPath);
+
+// Create database connection with error handling and optimization
+const db = new sqlite3.Database(dbPath, (err) => {
+  if (err) {
+    console.error('Error opening database:', err.message);
+    throw err;
+  }
+  console.log('Connected to SQLite database');
+});
+
+// Configure database for better performance and to prevent locking issues
+db.configure('busyTimeout', 10000); // 10 second timeout for busy database
+db.run('PRAGMA journal_mode = WAL'); // Write-Ahead Logging for better concurrency
+db.run('PRAGMA synchronous = NORMAL'); // Balance between safety and performance
+db.run('PRAGMA cache_size = 10000'); // Increase cache size
+db.run('PRAGMA temp_store = MEMORY'); // Store temporary tables in memory
 
 // Initialize database with tables
 const initializeDatabase = () => {
@@ -133,4 +148,58 @@ const initializeDatabase = () => {
   });
 };
 
-module.exports = { db, initializeDatabase };
+// Wrapper function for database queries with timeout handling
+const queryWithTimeout = (method, query, params = [], timeout = 5000) => {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Database query timeout after ${timeout}ms: ${query}`));
+    }, timeout);
+
+    const callback = (err, result) => {
+      clearTimeout(timer);
+      if (err) {
+        console.error('Database query error:', err.message);
+        reject(err);
+      } else {
+        resolve(result);
+      }
+    };
+
+    try {
+      if (method === 'get') {
+        db.get(query, params, callback);
+      } else if (method === 'all') {
+        db.all(query, params, callback);
+      } else if (method === 'run') {
+        db.run(query, params, function(err) {
+          callback(err, { lastID: this.lastID, changes: this.changes });
+        });
+      }
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+    }
+  });
+};
+
+// Enhanced database methods with timeout protection
+const dbWithTimeout = {
+  get: (query, params, timeout) => queryWithTimeout('get', query, params, timeout),
+  all: (query, params, timeout) => queryWithTimeout('all', query, params, timeout),
+  run: (query, params, timeout) => queryWithTimeout('run', query, params, timeout)
+};
+
+// Graceful shutdown handler
+process.on('SIGINT', () => {
+  console.log('Closing database connection...');
+  db.close((err) => {
+    if (err) {
+      console.error('Error closing database:', err.message);
+    } else {
+      console.log('Database connection closed.');
+    }
+    process.exit(0);
+  });
+});
+
+module.exports = { db, dbWithTimeout, initializeDatabase };

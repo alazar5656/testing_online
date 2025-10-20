@@ -7,11 +7,9 @@ import {
   Users,
   Package,
   AlertTriangle,
-  TrendingUp,
-  Clock,
-  CheckCircle
+  Clock
 } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
 const fetchDashboardData = async () => {
   const [overview, sales, inventory] = await Promise.all([

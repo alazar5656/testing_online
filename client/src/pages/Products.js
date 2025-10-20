@@ -17,7 +17,7 @@ const fetchCategories = async () => {
 export default function Products() {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
-  const [page, setPage] = useState(1);
+  const [page] = useState(1);
   const [showModal, setShowModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
   const [formData, setFormData] = useState({
